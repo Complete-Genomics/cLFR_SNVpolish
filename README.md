@@ -3,7 +3,7 @@
 ## Abstract
 
 We present `cLFR_VCpolish`, a molecule-linkage confidence model that separates a
-true SNV from sequencing error or mapping error in cLFR/cWGS consensus-called
+true SNV from sequencing error or mapping error in [cLFR](https://github.com/Complete-Genomics/LFR_Pipeline) consensus-called
 isoforms, and uses that model as a post-consensus variant-calling (VC) polish
 step. Building an isoform from a per-UMI **consensus** is a faster,
 lower-compute alternative to per-UMI **de novo** assembly (see
