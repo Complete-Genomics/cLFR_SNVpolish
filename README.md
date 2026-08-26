@@ -7,7 +7,7 @@ true SNV from sequencing error or mapping error in [cLFR](https://github.com/Com
 isoforms, and uses that model as a post-consensus variant-calling (VC) polish
 step. Building an isoform from a per-UMI **consensus** is a faster,
 lower-compute alternative to per-UMI **de novo** assembly (see
-[`denovo_OLC`](https://github.com/Complete-Genomics/LFR_Pipeline/tree/main/modules/clfr/denovo))
+[`cLFR_denovo_OLC`](https://github.com/Complete-Genomics/LFR_Pipeline/tree/main/modules/clfr/denovo))
 that also directly preserves SNVs, since each molecule's consensus is called
 from its own reads rather than smoothed into a shared assembly graph. For
 paired-end (PE) libraries, consensus can be built on a UMI-aware **Lariat**
