@@ -1,8 +1,8 @@
-# cLFR_VCpolish: molecule-linkage confidence scoring for VC-polished consensus isoforms
+# cLFR_SNVpolish: molecule-linkage confidence scoring for VC-polished consensus isoforms
 
 ## Abstract
 
-We present `cLFR_VCpolish`, a molecule-linkage confidence model that separates a
+We present `cLFR_SNVpolish`, a molecule-linkage confidence model that separates a
 true SNV from sequencing error or mapping error in [cLFR](https://github.com/Complete-Genomics/LFR_Pipeline) consensus-called
 isoforms, and uses that model as a post-consensus variant-calling (VC) polish
 step. Building an isoform from a per-UMI **consensus** is a faster,
@@ -14,7 +14,7 @@ paired-end (PE) libraries, consensus can be built on a UMI-aware **Lariat**
 alignment, so molecule-consistent evidence is already baked into the BAM
 before consensus calling even starts; Lariat does not support the SE data, however, so SE600 consensus calling runs on a standard,
 non-UMI-aware alignment and its output isoforms carry more uncorrected
-sequencing/mapping error at SNP positions. `cLFR_VCpolish`'s model closes that gap
+sequencing/mapping error at SNP positions. `cLFR_SNVpolish`'s model closes that gap
 after the fact: it scores each candidate SNP using independent-molecule
 count, within-molecule agreement, and per-read mapping/quality features,
 trained and chromosome-held-out validated against HG002/HG004 GIAB truth.
@@ -57,7 +57,7 @@ sequencing/mapping error at SNP positions than the PE/Lariat path, because
 the alignment step never had the chance to use molecule linkage to resolve
 ambiguous placements.
 
-`cLFR_VCpolish` exists to close that gap **after** alignment and consensus,
+`cLFR_SNVpolish` exists to close that gap **after** alignment and consensus,
 instead of requiring it to be solved **during** alignment. A standard
 per-read pileup caller sees read counts, not whether alt support is
 consistent *within independent molecules*. A true variant appears across many
@@ -273,7 +273,7 @@ preserves are trustworthy, and trustworthiness is exactly where the two
 library types diverge: PE consensus is built on Lariat's UMI-aware
 alignment, so molecule linkage is already resolved by the time consensus
 runs; SE600 cannot use Lariat, so its consensus is built blind to molecule
-structure and needs the linkage signal reintroduced afterward. `cLFR_VCpolish`'s
+structure and needs the linkage signal reintroduced afterward. `cLFR_SNVpolish`'s
 molecule-linkage model is that reintroduction step, and the results support
 why it works: the VAF band where per-read features alone cannot separate a
 genuine low-support variant from an artifact is exactly the band where
