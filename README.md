@@ -2,7 +2,8 @@
 
 ## Abstract
 
-We present `cLFR_SNVpolish`, a molecule-linkage confidence model that separates a
+We present `cLFR_SNVpolish`, a machine-learning (LightGBM) molecule-linkage
+confidence model that separates a
 true SNV from sequencing error or mapping error in [cLFR](https://github.com/Complete-Genomics/LFR_Pipeline) consensus-called
 isoforms, and uses that model as a post-consensus variant-calling (VC) polish
 step. Building an isoform from a per-UMI **consensus** is a faster,
@@ -138,17 +139,26 @@ flowchart TB
   (HG002 + HG003/HG004 at known ratios). Pure HG002 has no low-AF positives,
   so low-AF sensitivity must not be claimed from Step 1 data alone.
 
-### Feature extraction and model
+### Feature extraction and machine-learning model
 
 `02_extract_features.py` computes molecule-grouped features per candidate
 site: independent molecule count, within-molecule agreement, MAPQ, base
 quality, strand, soft-clip, and read-position bias -- signal a standard
 per-read pileup caller does not have access to.
 
-`03_train_eval.py` trains a LightGBM true-vs-error classifier with a
+`03_train_eval.py` trains a LightGBM gradient-boosted decision-tree
+machine-learning classifier for true-versus-error discrimination, with a
 **chromosome-held-out** test split, isotonic calibration fit only on a TRAIN
 slice, and reports PR/ROC/Brier plus VAF-stratified PR-AUC and feature
 importance.
+
+LightGBM is the default because the inputs are heterogeneous tabular features
+whose effects and interactions are non-linear (for example, molecule support,
+within-molecule agreement, VAF, and mapping/quality evidence). It supports
+class-imbalance weighting, probability scoring, feature-gain reporting, and
+bounded CPU parallelism in the implemented workflow. XGBoost is also available
+as a same-family robustness check; this repository does not claim an exhaustive
+model-selection benchmark against all machine-learning model families.
 
 The ablation trains three feature sets: `baseline` (plain pileup:
 dp/alt_reads/ref_reads/vaf) -> `no_molecule` (+ per-read mapping/quality,
@@ -322,4 +332,3 @@ before being trusted for the RNA/isoform application; as of this writing,
 that recalibration pass and its before/after false-SNP-rate validation have
 not been executed. This is the single highest-priority item before
 promoting `vc_polish` out of canary status.
-
