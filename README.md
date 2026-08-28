@@ -1,4 +1,4 @@
-# cLFR_SNVpolish: molecule-linkage confidence scoring for VC-polished consensus isoforms
+# cLFR_SNVpolish: molecule-linkage confidence scoring for post-consensus isoform variant polishing
 
 ## Abstract
 
@@ -322,5 +322,4 @@ before being trusted for the RNA/isoform application; as of this writing,
 that recalibration pass and its before/after false-SNP-rate validation have
 not been executed. This is the single highest-priority item before
 promoting `vc_polish` out of canary status.
-
 
