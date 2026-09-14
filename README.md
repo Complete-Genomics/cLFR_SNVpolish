@@ -8,9 +8,13 @@ true SNV from sequencing error or mapping error in [cLFR](https://github.com/Com
 isoforms, and uses that model as a post-consensus variant-calling (VC) polish
 step. Building an isoform from a per-UMI **consensus** is a faster,
 lower-compute alternative to per-UMI **de novo** assembly (see
-[`cLFR_denovo_OLC`](https://github.com/Complete-Genomics/LFR_Pipeline/tree/main/modules/clfr/denovo))
-that also directly preserves SNVs, since each molecule's consensus is called
-from its own reads rather than smoothed into a shared assembly graph. For
+[`cLFR_denovo_OLC`](https://github.com/Complete-Genomics/LFR_Pipeline/tree/main/modules/clfr/denovo)).
+Both approaches vote only within one molecule's own reads, so consensus's
+real advantage over de novo assembly is compute cost and reference-relative
+coordinates -- not superior SNV preservation: consensus depends on
+splice-aware reference alignment succeeding, so it can lose signal near
+splice junctions, read ends, or dense SNV clusters where a read fails to
+map, a limitation de novo assembly does not share (untested here). For
 paired-end (PE) libraries, consensus can be built on a UMI-aware **Lariat**
 alignment, so molecule-consistent evidence is already baked into the BAM
 before consensus calling even starts; Lariat does not support the SE data, however, so SE600 consensus calling runs on a standard,
@@ -34,17 +38,23 @@ Lariat-grade UMI-aware mapping at alignment time.
 Linked-read barcodes provide a natural molecule-level evidence pool: the
 reads sharing one UMI came from one physical molecule. There are two ways to
 turn that pool into a deliverable sequence. `denovo_OLC` assembles each
-barcode's reads with an evidence-aware OLC graph, which is thorough but pays
-an assembler's per-UMI process overhead at 1.5-3 million UMI scale. The
-alternative used here is to skip assembly and call a **per-molecule
-consensus** directly from the pileup within each UMI's own reads. This is
-cheaper -- no graph construction, no overlap search, no per-UMI process
-launch -- and it is not merely a faster shortcut: because the majority vote
-at each position is taken across one molecule's own reads rather than merged
-across a shared graph spanning multiple molecules, consensus calling
-preserves genuine SNVs that a cross-molecule assembly step could smooth away.
-Consensus is therefore treated here as an alternative to `denovo_OLC`, not a
-degraded substitute for it.
+barcode's reads with an evidence-aware OLC graph -- like consensus calling,
+its vote is confined to one UMI's own reads, so it is not a source of
+cross-molecule smoothing -- but it is thorough at the cost of an assembler's
+per-UMI process overhead at 1.5-3 million UMI scale. The alternative used
+here is to skip assembly and call a **per-molecule consensus** directly from
+the pileup within each UMI's own reads. This is cheaper -- no graph
+construction, no overlap search, no per-UMI process launch -- and its output
+is naturally anchored to reference coordinates, which is what this
+repository's downstream candidate generation (consensus-vs-reference diffs)
+depends on. That reference dependence is also consensus's known limitation:
+because the pileup depends on splice-aware alignment succeeding, a read that
+is soft-clipped near a short exon, spans a dense SNV cluster, or fails to
+map across a junction never enters the vote, whereas de novo assembly builds
+directly from raw reads without that requirement. Whether this gives
+`denovo_OLC` higher sensitivity in practice has not been measured here.
+Consensus is therefore treated as the cheaper alternative to `denovo_OLC`,
+not a demonstrably higher-fidelity one.
 
 Consensus quality depends on what the alignment already knows about molecule
 structure. For paired-end (PE) libraries, reads can be mapped with the
@@ -276,10 +286,15 @@ breaks UMI features."
 ## Discussion
 
 Consensus calling is chosen over `denovo_OLC`-style de novo assembly not as a
-fallback but as the cheaper path that still preserves SNVs, because the
-majority vote stays within one molecule's own reads rather than being pooled
-across a shared assembly graph. That choice only pays off if the SNVs it
-preserves are trustworthy, and trustworthiness is exactly where the two
+fallback but as the cheaper, reference-anchored path -- not because it is
+inherently better at preserving SNVs. Both approaches vote only within one
+molecule's own reads, and consensus's reference-guided pileup can in
+principle lose signal exactly where alignment struggles (splice junctions,
+read ends, dense SNV clusters), a head-to-head comparison this repository has
+not run. The choice instead reflects compute cost and the fact that
+downstream candidate generation here needs reference-relative coordinates.
+Whatever SNVs consensus does produce still need to be trustworthy, and
+trustworthiness is exactly where the two
 library types diverge: PE consensus is built on Lariat's UMI-aware
 alignment, so molecule linkage is already resolved by the time consensus
 runs; SE600 cannot use Lariat, so its consensus is built blind to molecule
