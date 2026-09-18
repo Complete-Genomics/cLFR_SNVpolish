@@ -31,7 +31,16 @@ VAF alone cannot separate a true low-support het from a PCR/sequencing
 artifact. Deployed as a post-consensus VC polish step (`KEEP` / `REVERT` /
 `EDIT` per SNP, with RNA-editing sites protected from reversion), the model
 turns a raw consensus FASTA into a corrected isoform FASTA without requiring
-Lariat-grade UMI-aware mapping at alignment time.
+Lariat-grade UMI-aware mapping at alignment time. Because cutting wet-lab
+validation is fundamentally a decision problem -- does this specific call
+need bench confirmation, not just "is the model usually right" -- `p_true`
+is also evaluated directly as a selective-prediction/abstention signal on a
+cost-realistic candidate pool: sending the least-confident 5-10% to
+validation recovers 80%+ of the missed true variants on both GIAB samples,
+though this comes with two disclosed caveats rather than a single headline
+number -- a structural ceiling where confidently-wrong misses cannot be
+recovered under confidence ranking, and a UMI-feature benefit at that
+decision that is not uniform between HG002 and HG004.
 
 ## Introduction
 
@@ -90,7 +99,10 @@ FASTA -- this repository is scoped to SE600 only. The alignment step
 (orange) is exactly the point where UMI-aware Lariat mapping is unavailable
 -- Lariat does not support the SE600 chemistry -- which is why the consensus
 output needs the polish stage (blue) that this repository trains and
-applies; green nodes are the rest of the production consensus pipeline.
+applies; green nodes are the rest of the production consensus pipeline. The
+dashed gray node is not part of the deployed pipeline: it marks that
+`p_true` also feeds a separate, currently analysis-only selective-prediction
+use (see Results below), independent of the `KEEP`/`REVERT`/`EDIT` decision.
 
 ```mermaid
 flowchart TB
@@ -131,12 +143,16 @@ flowchart TB
 
     S --> T[Final corrected isoform FASTA]
 
+    N -.-> U[Selective prediction / validation triage\nanalysis only, not deployed]
+
     classDef production fill:#e8f5e9,stroke:#2e7d32,color:#1b5e20;
     classDef gap fill:#fff8e1,stroke:#ef6c00,color:#e65100;
     classDef polish fill:#e3f2fd,stroke:#1565c0,color:#0d47a1;
+    classDef analysis fill:#f5f5f5,stroke:#757575,color:#424242,stroke-dasharray: 5 5;
     class A,E,F,G,H,I,J,K production;
     class D gap;
     class L,M,N,O,P,Q,R,S,T polish;
+    class U analysis;
 ```
 
 ### Data and truth (Step 1 vs Step 2)
@@ -282,6 +298,86 @@ supports the depth explanation: HG004's chr19 has a much milder depth
 anomaly (~1.25x, not ~2x) and its UMI delta is normal (+0.0316) -- the
 earlier negative result tracks depth severity, not "chr19 categorically
 breaks UMI features."
+
+### Selective prediction: how much orthogonal validation can `p_true` actually save
+
+This is a different kind of claim than the KEEP/REVERT accuracy result
+above, and it is the one that actually matters for cutting bench work. The
+recurring bottleneck in using a computational model to reduce wet-lab
+validation is not prediction accuracy -- it is a decision problem: given the
+evidence the model already has, does *this specific* call need to be
+confirmed at the bench, and can that decision be trusted enough to skip it.
+Get that decision wrong silently and the risk does not go away, it just
+moves -- from "the wrong protocol got run" to "the wrong call got
+auto-accepted and nobody looked." A savings number by itself does not
+answer that; a savings number plus a disclosed account of exactly where the
+decision rule cannot be trusted does. That is why the structural blind spot
+below (the FNR ceiling) and a rejected fix are reported alongside the
+savings, in the same place, rather than the savings being reported alone.
+
+`p_true` is also directly usable as an abstention/selective-prediction
+signal, independent of the `KEEP`/`REVERT`/`EDIT` decision above: instead of
+asking "is this call right", ask "does this call need orthogonal validation
+(Sanger/ddPCR/long-read) at all, or can it be auto-accepted". This is a
+post-hoc risk-coverage audit of the same genome-wide LOCO predictions
+reported above (analysis script `06_risk_coverage.py`, kept in the companion
+[`cLFR_eval`](https://github.com/Complete-Genomics/cLFR_eval) research repo
+rather than duplicated here). Computing this on the raw candidate pool is
+misleading -- label prevalence there is ~0.5%, so a confidence threshold
+"saves" close to 100% for free by construction -- so the pool is first
+restricted to candidates that would realistically incur a validation cost
+(`alt_reads>=2`, `VAF>=0.05`).
+
+**Money chart -- % of missed true variants recovered by sending the least-
+confident slice to validation, at a fixed validation-cost budget (not a
+fixed error-rate budget, which saturates to 100% coverage too fast to be
+informative):**
+
+| validation cost (abstain fraction) | HG002 FN recovered | HG004 FN recovered |
+|---|---|---|
+| 1% | 22.2% | 10.9% |
+| 5% | 82.4% | 53.4% |
+| 10% | 92.8% | 86.1% |
+| 20% | 97.0% | 97.6% |
+
+Confidence-ranked abstention hits a structural ceiling on both genomes: past
+a ~15% budget, the FNR of the auto-accepted (covered) set locks exactly at
+1.0 -- every missed true variant still left in the auto-accepted pool is one
+the model is *confidently* wrong about (`p_true` near 0 despite being a real
+variant), which looks identical to a confidently-correct true negative under
+this ranking rule. No amount of extra validation budget recovers those under
+`|p_true-0.5|` ranking; a different signal would be needed.
+
+Comparing `all` vs `no_molecule` at fixed validation cost (rather than raw
+PR-AUC) shows the UMI-feature benefit is **not uniform across the two
+GIAB samples** -- reported both ways rather than pooled, per this
+repository's practice of disclosing per-chromosome/per-sample splits instead
+of averaging them away:
+- **HG004**: `all` recovers more missed true variants than `no_molecule` at
+  every cost level tested, +0.6 to +4.1 percentage points, peaking around a
+  10% budget.
+- **HG002**: the two arms are tied to slightly *negative* for `all` at the
+  tightest budgets (-2.1pp at 1%, -1.3pp at 2%), and only turn consistently
+  positive once the budget exceeds ~5%.
+
+**A hand-coded "known-hard-region" abstention rule was tested and rejected**
+(same disclosure practice as `no_abs` above). GIAB difficult-region
+stratification BEDs (low-mappability/segdup, "all difficult") were tried as
+a forced-review rule layered on top of confidence ranking, on the hypothesis
+that model misses concentrate there. A naive blended error-rate check first
+suggested they don't (difficult regions looked *safer*); splitting FN/FP
+showed that was a class-imbalance artifact -- FNR actually is higher in
+difficult regions (true variants are genuinely harder to call there) while
+FPR is lower (candidate generation is already confined to GIAB confident
+regions, pre-filtering noise there). But a slice with very high *local* FNR
+still only held ~4-6% of the pool's *total* missed variants (it is a small,
+low-prevalence slice), so forcing validation budget onto it capped FN
+recovery at 4-6% until the budget grew large enough to cover the whole
+slice -- plain confidence ranking already recovers 80%+ of missed variants
+with a 5-10% budget without any hard-coded rule. Kept here, not silently
+dropped, because a slice's *local* error rate being high is not the same
+claim as the slice holding *most* of the errors -- a distinction worth
+stating explicitly since it is easy to conflate.
 
 ## Discussion
 
