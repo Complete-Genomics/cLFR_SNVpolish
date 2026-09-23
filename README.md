@@ -8,13 +8,9 @@ true SNV from sequencing error or mapping error in [cLFR](https://github.com/Com
 isoforms, and uses that model as a post-consensus variant-calling (VC) polish
 step. Building an isoform from a per-UMI **consensus** is a faster,
 lower-compute alternative to per-UMI **de novo** assembly (see
-[`cLFR_denovo_OLC`](https://github.com/Complete-Genomics/LFR_Pipeline/tree/main/modules/clfr/denovo)).
-Both approaches vote only within one molecule's own reads, so consensus's
-real advantage over de novo assembly is compute cost and reference-relative
-coordinates -- not superior SNV preservation: consensus depends on
-splice-aware reference alignment succeeding, so it can lose signal near
-splice junctions, read ends, or dense SNV clusters where a read fails to
-map, a limitation de novo assembly does not share (untested here). For
+[`cLFR_denovo_OLC`](https://github.com/Complete-Genomics/LFR_Pipeline/tree/main/modules/clfr/denovo))
+that also directly preserves SNVs, since each molecule's consensus is called
+from its own reads rather than smoothed into a shared assembly graph. For
 paired-end (PE) libraries, consensus can be built on a UMI-aware **Lariat**
 alignment, so molecule-consistent evidence is already baked into the BAM
 before consensus calling even starts; Lariat does not support the SE data, however, so SE600 consensus calling runs on a standard,
@@ -29,41 +25,27 @@ by +0.0258 (HG002) / +0.0236 (HG004), with the gain following an inverted-U
 across VAF -- peaking at 3-4x the aggregate delta in the 0.05-0.5 band, where
 VAF alone cannot separate a true low-support het from a PCR/sequencing
 artifact. Deployed as a post-consensus VC polish step (`KEEP` / `REVERT` /
-`EDIT` per SNP, with RNA-editing sites protected from reversion), the model
+`EDIT` per isoform and position, with RNA-editing sites protected from
+reversion), the model
 turns a raw consensus FASTA into a corrected isoform FASTA without requiring
-Lariat-grade UMI-aware mapping at alignment time. Because cutting wet-lab
-validation is fundamentally a decision problem -- does this specific call
-need bench confirmation, not just "is the model usually right" -- `p_true`
-is also evaluated directly as a selective-prediction/abstention signal on a
-cost-realistic candidate pool: sending the least-confident 5-10% to
-validation recovers 80%+ of the missed true variants on both GIAB samples,
-though this comes with two disclosed caveats rather than a single headline
-number -- a structural ceiling where confidently-wrong misses cannot be
-recovered under confidence ranking, and a UMI-feature benefit at that
-decision that is not uniform between HG002 and HG004.
+Lariat-grade UMI-aware mapping at alignment time.
 
 ## Introduction
 
 Linked-read barcodes provide a natural molecule-level evidence pool: the
 reads sharing one UMI came from one physical molecule. There are two ways to
 turn that pool into a deliverable sequence. `denovo_OLC` assembles each
-barcode's reads with an evidence-aware OLC graph -- like consensus calling,
-its vote is confined to one UMI's own reads, so it is not a source of
-cross-molecule smoothing -- but it is thorough at the cost of an assembler's
-per-UMI process overhead at 1.5-3 million UMI scale. The alternative used
-here is to skip assembly and call a **per-molecule consensus** directly from
-the pileup within each UMI's own reads. This is cheaper -- no graph
-construction, no overlap search, no per-UMI process launch -- and its output
-is naturally anchored to reference coordinates, which is what this
-repository's downstream candidate generation (consensus-vs-reference diffs)
-depends on. That reference dependence is also consensus's known limitation:
-because the pileup depends on splice-aware alignment succeeding, a read that
-is soft-clipped near a short exon, spans a dense SNV cluster, or fails to
-map across a junction never enters the vote, whereas de novo assembly builds
-directly from raw reads without that requirement. Whether this gives
-`denovo_OLC` higher sensitivity in practice has not been measured here.
-Consensus is therefore treated as the cheaper alternative to `denovo_OLC`,
-not a demonstrably higher-fidelity one.
+barcode's reads with an evidence-aware OLC graph, which is thorough but pays
+an assembler's per-UMI process overhead at 1.5-3 million UMI scale. The
+alternative used here is to skip assembly and call a **per-molecule
+consensus** directly from the pileup within each UMI's own reads. This is
+cheaper -- no graph construction, no overlap search, no per-UMI process
+launch -- and it is not merely a faster shortcut: because the majority vote
+at each position is taken across one molecule's own reads rather than merged
+across a shared graph spanning multiple molecules, consensus calling
+preserves genuine SNVs that a cross-molecule assembly step could smooth away.
+Consensus is therefore treated here as an alternative to `denovo_OLC`, not a
+degraded substitute for it.
 
 Consensus quality depends on what the alignment already knows about molecule
 structure. For paired-end (PE) libraries, reads can be mapped with the
@@ -99,10 +81,7 @@ FASTA -- this repository is scoped to SE600 only. The alignment step
 (orange) is exactly the point where UMI-aware Lariat mapping is unavailable
 -- Lariat does not support the SE600 chemistry -- which is why the consensus
 output needs the polish stage (blue) that this repository trains and
-applies; green nodes are the rest of the production consensus pipeline. The
-dashed gray node is not part of the deployed pipeline: it marks that
-`p_true` also feeds a separate, currently analysis-only selective-prediction
-use (see Results below), independent of the `KEEP`/`REVERT`/`EDIT` decision.
+applies; green nodes are the rest of the production consensus pipeline.
 
 ```mermaid
 flowchart TB
@@ -129,30 +108,28 @@ flowchart TB
 
     subgraph POLISH[VC polish -- closes the SE600 / no-Lariat gap]
         direction TB
-        K --> L[Candidate SNPs:\nconsensus-vs-reference diffs]
+        K --> L[Per-isoform candidates:\nwalk each consensus alignment vs reference]
         L --> M[Extract molecule-linkage features\non consensus-supporting reads]
-        M --> N[Step 1 GBDT: p_true per SNP\nHG002/HG004 GIAB-trained, chrom-held-out]
-        N --> O{Per-SNP decision}
-        O -->|p_true >= thr| P[KEEP]
-        O -->|p_true < thr, not editing site| Q[REVERT to reference]
+        M --> N[Step 1 GBDT: p_site per locus\nHG002/HG004 GIAB-trained, chrom-held-out]
+        L --> U[This molecule's own reads:\nsupport + within-molecule agreement]
+        N --> O{Per isoform x position}
+        U --> O
+        O -->|site is real AND this molecule carries it| P[KEEP]
+        O -->|site not real, or not on this molecule| Q[REVERT to reference]
         O -->|A>G / T>C at REDIportal site| R[EDIT\nRNA editing, annotated, kept]
-        P --> S[bcftools consensus]
+        P --> S[Edit each isoform's own sequence\nat its own coordinates]
         Q --> S
         R --> S
     end
 
     S --> T[Final corrected isoform FASTA]
 
-    N -.-> U[Selective prediction / validation triage\nanalysis only, not deployed]
-
     classDef production fill:#e8f5e9,stroke:#2e7d32,color:#1b5e20;
     classDef gap fill:#fff8e1,stroke:#ef6c00,color:#e65100;
     classDef polish fill:#e3f2fd,stroke:#1565c0,color:#0d47a1;
-    classDef analysis fill:#f5f5f5,stroke:#757575,color:#424242,stroke-dasharray: 5 5;
     class A,E,F,G,H,I,J,K production;
     class D gap;
-    class L,M,N,O,P,Q,R,S,T polish;
-    class U analysis;
+    class L,M,N,O,P,Q,R,S,T,U polish;
 ```
 
 ### Data and truth (Step 1 vs Step 2)
@@ -208,11 +185,35 @@ bash run.sh
 ### Step 4 -- from re-score to a VC-polished isoform
 
 `04_apply_rescore.py` turns the scorer into the polish stage shown in Figure
-1: run `02` on the reads that support each consensus call (candidates =
-consensus-vs-reference diffs), then per SNP decide `KEEP` (`p_true >= thr` ->
-real SNP), `REVERT` (`p_true < thr` -> error, drop), or `EDIT` (A>G/T>C at a
-REDIportal site -> RNA editing, kept and annotated, never reverted). The
-`KEEP` set feeds `bcftools consensus` to produce the corrected isoform FASTA.
+1, and it decides **per isoform**, not per locus. Variant calling is a
+locus-level task ("this sample is 0/1 here"); isoform correction is a
+sequence-level one ("this molecule's base at this position"). Each consensus
+record is one molecule (`>{umi_id}_{chrom}`), so candidates are enumerated by
+walking each consensus-to-reference alignment and taking its mismatches --
+which keeps the molecule identity that a locus-level VCF discards.
+
+Every (isoform, position) is then judged on two terms. `p_site` is the Step 1
+GBDT score at that locus: the model was trained on locus-level labels, so it
+answers *is this a real variant site in this sample* and nothing more. The
+second term is that molecule's own reads at the position -- how many support
+the isoform's base and how consistently. A call is `KEEP` only if the site is
+real **and** this molecule carries it; it is `REVERT` if either term fails;
+`EDIT` (A>G/T>C at a REDIportal site) is RNA editing, kept and annotated,
+never reverted. The corrected FASTA is produced by editing each isoform's own
+sequence at its own coordinates, so two molecules may legitimately differ at
+one position -- which is what a het site is, and what `bcftools consensus`
+against a single reference backbone cannot represent.
+
+The molecule term is a rule (`--min-mol-reads` / `--min-mol-agreement`), not a
+trained model, and is marked as such: at a het site there is no per-molecule
+truth, since each molecule legitimately carries one allele, so only hom-alt /
+hom-ref sites could ever supply labels for one.
+
+Note the production pipeline emits only a PAF for the consensus-to-reference
+step (`minimap2 -x asm20`, no `-a`/`-c`), which carries no alignment to walk,
+so Step 4 needs a CIGAR-bearing BAM built first:
+`minimap2 -ax asm20 REF.fa consensus.fixRC.fasta | samtools sort -o consensus.bam`.
+
 Validation uses ERCC: per-base false-SNP rate before vs. after correction,
 since a correct ERCC consensus should match the known ERCC sequence
 base-for-base and any residual SNP is a consensus error. Note: the Step 1
@@ -223,8 +224,9 @@ command.
 ### Implementation
 
 Dependencies: `pysam, pandas, numpy, scikit-learn, lightgbm` (see
-`environment.yml`); `samtools, htslib, bcftools` (indexing + Step 4
-consensus).
+`environment.yml`); `samtools, htslib` (indexing) and `minimap2` (the Step 4
+consensus-to-reference alignment). Step 4 no longer needs `bcftools`: the
+corrected FASTA is written by editing each isoform's own sequence.
 
 **Prerequisites -- indexes (do this first):**
 
@@ -240,14 +242,15 @@ a `.vcf.gz` errors as "not a BGZF file":
 `zcat t.vcf.gz | bgzip > t.bgz.vcf.gz && tabix -p vcf t.bgz.vcf.gz`.
 
 **Running resources (per step):** the heavy steps are **01/02** (genome
-pileup); **03/04** are light.
+pileup); **03** is light, and **04** now runs one streaming pileup per
+chromosome of its own, so it is heavier than it used to be.
 
 | Step | CPU | Memory | Notes |
 |---|---|---|---|
 | 01 make_candidates | benefits from more cores; I/O-bound on the BAM | modest (streams) | scan fewer `--regions` to cut time |
 | 02 extract_features | CPU-heavy (re-pileup per candidate) | modest (streams) | scales with #candidates |
 | 03 train_eval | GBDT grabs ALL cores by default -> **cap with `--threads N`** (default 8; also caps OMP/BLAS). `--n-bag N` ~ N x time | **loads features.tsv into pandas**: ~2-5 GB per ~10M rows. Confirmed empirically on a 20M-row / 3.3GB genome-wide table: ~1.5-2 min/fold with `--threads 4` on an **18GB** Mac, no OOM -- 22-fold LOCO (44 runs incl. ablation) finished in 76 min. Run folds **sequentially**, not in parallel -- each fold loads the full table again, and concurrent loads is what would blow the budget | on a 128-core shared box `--threads 8` keeps it polite |
-| 04 apply_rescore | 1 core fine | small | + `bcftools` for the FASTA |
+| 04 apply_rescore | 1 core fine; one streaming pileup per chrom | modest (streams; per-chrom evidence is released) | needs a CIGAR-bearing consensus BAM (`minimap2 -ax asm20`) |
 
 ## Results
 
@@ -299,98 +302,13 @@ anomaly (~1.25x, not ~2x) and its UMI delta is normal (+0.0316) -- the
 earlier negative result tracks depth severity, not "chr19 categorically
 breaks UMI features."
 
-### Selective prediction: how much orthogonal validation can `p_true` actually save
-
-This is a different kind of claim than the KEEP/REVERT accuracy result
-above, and it is the one that actually matters for cutting bench work. The
-recurring bottleneck in using a computational model to reduce wet-lab
-validation is not prediction accuracy -- it is a decision problem: given the
-evidence the model already has, does *this specific* call need to be
-confirmed at the bench, and can that decision be trusted enough to skip it.
-Get that decision wrong silently and the risk does not go away, it just
-moves -- from "the wrong protocol got run" to "the wrong call got
-auto-accepted and nobody looked." A savings number by itself does not
-answer that; a savings number plus a disclosed account of exactly where the
-decision rule cannot be trusted does. That is why the structural blind spot
-below (the FNR ceiling) and a rejected fix are reported alongside the
-savings, in the same place, rather than the savings being reported alone.
-
-`p_true` is also directly usable as an abstention/selective-prediction
-signal, independent of the `KEEP`/`REVERT`/`EDIT` decision above: instead of
-asking "is this call right", ask "does this call need orthogonal validation
-(Sanger/ddPCR/long-read) at all, or can it be auto-accepted". This is a
-post-hoc risk-coverage audit of the same genome-wide LOCO predictions
-reported above (analysis script `06_risk_coverage.py`, kept in the companion
-[`cLFR_eval`](https://github.com/Complete-Genomics/cLFR_eval) research repo
-rather than duplicated here). Computing this on the raw candidate pool is
-misleading -- label prevalence there is ~0.5%, so a confidence threshold
-"saves" close to 100% for free by construction -- so the pool is first
-restricted to candidates that would realistically incur a validation cost
-(`alt_reads>=2`, `VAF>=0.05`).
-
-**Money chart -- % of missed true variants recovered by sending the least-
-confident slice to validation, at a fixed validation-cost budget (not a
-fixed error-rate budget, which saturates to 100% coverage too fast to be
-informative):**
-
-| validation cost (abstain fraction) | HG002 FN recovered | HG004 FN recovered |
-|---|---|---|
-| 1% | 22.2% | 10.9% |
-| 5% | 82.4% | 53.4% |
-| 10% | 92.8% | 86.1% |
-| 20% | 97.0% | 97.6% |
-
-Confidence-ranked abstention hits a structural ceiling on both genomes: past
-a ~15% budget, the FNR of the auto-accepted (covered) set locks exactly at
-1.0 -- every missed true variant still left in the auto-accepted pool is one
-the model is *confidently* wrong about (`p_true` near 0 despite being a real
-variant), which looks identical to a confidently-correct true negative under
-this ranking rule. No amount of extra validation budget recovers those under
-`|p_true-0.5|` ranking; a different signal would be needed.
-
-Comparing `all` vs `no_molecule` at fixed validation cost (rather than raw
-PR-AUC) shows the UMI-feature benefit is **not uniform across the two
-GIAB samples** -- reported both ways rather than pooled, per this
-repository's practice of disclosing per-chromosome/per-sample splits instead
-of averaging them away:
-- **HG004**: `all` recovers more missed true variants than `no_molecule` at
-  every cost level tested, +0.6 to +4.1 percentage points, peaking around a
-  10% budget.
-- **HG002**: the two arms are tied to slightly *negative* for `all` at the
-  tightest budgets (-2.1pp at 1%, -1.3pp at 2%), and only turn consistently
-  positive once the budget exceeds ~5%.
-
-**A hand-coded "known-hard-region" abstention rule was tested and rejected**
-(same disclosure practice as `no_abs` above). GIAB difficult-region
-stratification BEDs (low-mappability/segdup, "all difficult") were tried as
-a forced-review rule layered on top of confidence ranking, on the hypothesis
-that model misses concentrate there. A naive blended error-rate check first
-suggested they don't (difficult regions looked *safer*); splitting FN/FP
-showed that was a class-imbalance artifact -- FNR actually is higher in
-difficult regions (true variants are genuinely harder to call there) while
-FPR is lower (candidate generation is already confined to GIAB confident
-regions, pre-filtering noise there). But a slice with very high *local* FNR
-still only held ~4-6% of the pool's *total* missed variants (it is a small,
-low-prevalence slice), so forcing validation budget onto it capped FN
-recovery at 4-6% until the budget grew large enough to cover the whole
-slice -- plain confidence ranking already recovers 80%+ of missed variants
-with a 5-10% budget without any hard-coded rule. Kept here, not silently
-dropped, because a slice's *local* error rate being high is not the same
-claim as the slice holding *most* of the errors -- a distinction worth
-stating explicitly since it is easy to conflate.
-
 ## Discussion
 
 Consensus calling is chosen over `denovo_OLC`-style de novo assembly not as a
-fallback but as the cheaper, reference-anchored path -- not because it is
-inherently better at preserving SNVs. Both approaches vote only within one
-molecule's own reads, and consensus's reference-guided pileup can in
-principle lose signal exactly where alignment struggles (splice junctions,
-read ends, dense SNV clusters), a head-to-head comparison this repository has
-not run. The choice instead reflects compute cost and the fact that
-downstream candidate generation here needs reference-relative coordinates.
-Whatever SNVs consensus does produce still need to be trustworthy, and
-trustworthiness is exactly where the two
+fallback but as the cheaper path that still preserves SNVs, because the
+majority vote stays within one molecule's own reads rather than being pooled
+across a shared assembly graph. That choice only pays off if the SNVs it
+preserves are trustworthy, and trustworthiness is exactly where the two
 library types diverge: PE consensus is built on Lariat's UMI-aware
 alignment, so molecule linkage is already resolved by the time consensus
 runs; SE600 cannot use Lariat, so its consensus is built blind to molecule
@@ -418,7 +336,7 @@ as much as positive ones do.
 
 `vc_polish` ships as a **canary**: disabled by default
 (`modules.vc_polish: False`), and additive-only -- it does not overwrite or
-gate the existing `variant_calling` output. Two items are open before it
+gate the existing `variant_calling` output. Three items are open before it
 should be trusted beyond that canary role.
 
 **RNA editing is currently not specially handled.** The production config
@@ -443,3 +361,19 @@ before being trusted for the RNA/isoform application; as of this writing,
 that recalibration pass and its before/after false-SNP-rate validation have
 not been executed. This is the single highest-priority item before
 promoting `vc_polish` out of canary status.
+
+**The per-isoform Step 4 has not been run on real data.** The rewrite
+described above is covered by a synthetic end-to-end test only -- fixtures
+with a known forward-strand and a known minus-strand consensus record, which
+verify the `KEEP` / `REVERT_MOL` / `REVERT_SITE` paths and, in particular,
+that a reverse-strand correction lands at the right offset with the right
+complemented base. That test says the coordinate arithmetic is right; it says
+nothing about whether the thresholds are right. Two things in particular are
+unmeasured: the `--min-mol-reads` / `--min-mol-agreement` defaults (2 and 0.6)
+are placeholders chosen to be conservative, not values tuned against ERCC; and
+the rate at which consensus records fail to join to their reads is unknown on
+a real run, since the two molecule-id conventions in this codebase disagree
+(`consensus_fasta.py` keeps the `/2` mate suffix that `02`'s default regex
+drops, so the join is normalized on both sides). Step 4 reports that failure
+count and warns when it dominates -- check it on the first real run before
+reading anything into the output.
